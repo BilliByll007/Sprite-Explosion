@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Imágenes en Canvas - Multijugador</title>
+
+    <script>
+        // =========================================================
+        // VARIABLES DEL JUEGO
+        // =========================================================
+
+        var ctx;
+        var canvas;
+
+        var sx = 0, sy = 0;
+        var sw = 71, sh = 112;
+        var dx = 0, dy = 480;
+        var dw = 71, dh = 112;
+
+        var p = 0, paso = 12;
+        var frameIndex = 0, totalFrames = 8;
+
+        var ssx = 0;
+
+        var img = new Image();
+        var img2 = new Image();
+        var imgBomba = new Image();
+        var imgMoneda = new Image();
+        var imgExplosion = new Image();
+
+        // Bombas sincronizadas por el servidor.
+        var v = [];
+
+        // Monedas locales.
+        var moneda = [];
+
+        var miId = null;
+        var otrosJugadores = {};
+
+        var socket;
+
+        var colision = false;
+        var explosionInicio = 0;
+        var explosionX = 0;
+        var explosionFrame = 0;
+
+        // =========================================================
+        // CONFIGURACIÓN WEBSOCKET
+        // =========================================================
+
+        // IP del ordenador que ejecuta server.js.
+        var IP_SERVIDOR = "192.168.211.29";
+        var PUERTO_SERVIDOR = 3000;
+
+        function conectarServidor() {
+            socket = new WebSocket(
+                "ws://" + IP_SERVIDOR + ":" + PUERTO_SERVIDOR
+            );
+
+            socket.onopen = function () {
+                console.log("Conectado al servidor WebSocket");
+                actualizarEstado();
+            };
+
+            socket.onmessage = function (event) {
+                var datos;
+
+                try {
+                    datos = JSON.parse(event.data);
+                } catch (error) {
+                    console.error("Mensaje no válido:", error);
+                    return;
+                }
+
+                // ---------------------------------------------
+                // IDENTIFICADOR DEL JUGADOR
+                // ---------------------------------------------
+
+                if (datos.tipo === "id") {
+                    miId = datos.id;
+
+                    console.log("Mi ID es:", miId);
+                    actualizarEstado();
+                }
+
+                // ---------------------------------------------
+                // ESTADO INICIAL DEL JUEGO
+                // ---------------------------------------------
+
+                else if (datos.tipo === "estado") {
+                    otrosJugadores = datos.jugadores || {};
+                    v = datos.bombas || [];
+
+                    // No dibujar nuestro personaje dos veces.
+                    if (miId !== null) {
+                        delete otrosJugadores[miId];
+                    }
+
+                    actualizarEstado();
+                }
+
+                // ---------------------------------------------
+                // MOVIMIENTO DE OTROS JUGADORES
+                // ---------------------------------------------
+
+                else if (datos.tipo === "movimiento") {
+                    if (datos.id != miId) {
+                        otrosJugadores[datos.id] = {
+                            id: datos.id,
+                            x: datos.x,
+                            y: datos.y,
+                            frameIndex: datos.frameIndex || 0,
+                            sy: datos.sy || 0
+                        };
+                    }
+                }
+
+                // ---------------------------------------------
+                // DESCONEXIÓN DE UN JUGADOR
+                // ---------------------------------------------
+
+                else if (datos.tipo === "desconexion") {
+                    delete otrosJugadores[datos.id];
+                    actualizarEstado();
+                }
+
+                // ---------------------------------------------
+                // BOMBAS SINCRONIZADAS
+                // ---------------------------------------------
+
+                else if (datos.tipo === "bombas") {
+                    // El servidor proporciona las posiciones, tamaños y fotogramas de todas las bombas para sincronizarlas.
+                    v = datos.bombas || [];
+                }
+            };
+
+
+            socket.onclose = function () {
+                document.getElementById("estado").textContent =
+                    "Desconectado del servidor.";
+            };
+
+
+            socket.onerror = function (error) {
+                console.error("Error WebSocket:", error);
+
+                document.getElementById("estado").textContent =
+                    "Error de conexión. Comprueba la IP, el puerto y el cortafuegos.";
+            };
+        }
+
+        function actualizarEstado() {
+            var cantidad = Object.keys(otrosJugadores).length;
+
+            if (miId !== null) {
+                cantidad++;
+            }
+
+            document.getElementById("estado").textContent =
+                (miId === null ? "Conectando..." : "Jugador " + miId) +
+                " | Jugadores conectados: " + cantidad;
+        }
+
+        // =========================================================
+        // FUNCIONES AUXILIARES
+        // =========================================================
+
+        function azar(h) {
+            return Math.floor(Math.random() * h);
+        }
+
+        function cargaContextoCanvas(idCanvas) {
+            var elemento = document.getElementById(idCanvas);
+
+            if (elemento && elemento.getContext) {
+                var contexto = elemento.getContext("2d");
+
+                if (contexto) {
+                    return contexto;
+                }
+            }
+
+            return false;
+        }
+
+        // =========================================================
+        // MOVIMIENTO DEL JUGADOR LOCAL
+        // =========================================================
+
+        function enviarMovimiento() {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({
+                    tipo: "movimiento",
+                    x: p,
+                    y: dy,
+                    frameIndex: frameIndex,
+                    sy: sy
+                }));
+            }
+        }
+
+        function moverIzquierda() {
+            if (colision) return;
+
+            sy = 112;
+
+            p -= paso;
+
+            if (p < 0) {
+                p = 0;
+            }
+
+            frameIndex = (frameIndex + 1) % totalFrames;
+            sx = sw * frameIndex;
+
+            enviarMovimiento();
+        }
+
+        function moverDerecha() {
+            if (colision) return;
+
+            sy = 0;
+
+            p += paso;
+
+            if (p > 729) {
+                p = 729;
+            }
+
+            frameIndex = (frameIndex + 1) % totalFrames;
+            sx = sw * frameIndex;
+
+            enviarMovimiento();
+        }
+
+        // =========================================================
+        // TECLADO
+        // =========================================================
+
+        window.addEventListener("keydown", function (e) {
+            if (e.key === "ArrowLeft" || e.keyCode === 37) {
+                e.preventDefault();
+                moverIzquierda();
+            }
+
+            if (e.key === "ArrowRight" || e.keyCode === 39) {
+                e.preventDefault();
+                moverDerecha();
+            }
+        }, false);
+
+        // =========================================================
+        // MONEDAS
+        // =========================================================
+
+        function coin(xPos, yPos) {
+            this.xPos = xPos;
+            this.yPos = yPos;
+
+            this.frameIndex = azar(19);
+            this.totalFrames = 19;
+            this.size = 50;
+
+            this.pintar = function () {
+                if (!imgMoneda.complete || !imgMoneda.naturalWidth) {
+                    return;
+                }
+
+                ssx = 100 * this.frameIndex;
+
+                ctx.drawImage(
+                    imgMoneda,
+                    ssx, 0, 100, 100,
+                    this.xPos, this.yPos,
+                    this.size, this.size
+                );
+
+                this.frameIndex =
+                    (this.frameIndex + 1) % this.totalFrames;
+
+                this.yPos += 2;
+
+                if (this.yPos > 700) {
+                    this.yPos = -1400;
+                    this.xPos = azar(700);
+                }
+            };
+        }
+
+        function crearMonedas(n) {
+            moneda = [];
+
+            for (var t = 0; t < n; t++) {
+                moneda.push(
+                    new coin(
+                        azar(700),
+                        -2100 - 100 * t
+                    )
+                );
+            }
+        }
+
+        // =========================================================
+        // DIBUJAR BOMBAS
+        // =========================================================
+
+        function dibujarBomba(bomba) {
+            if (!imgBomba.complete || !imgBomba.naturalWidth) {
+                return;
+            }
+
+            var frame = bomba.frameIndex || 0;
+
+            // Se utiliza el estado recibido del servidor.
+            ctx.drawImage(
+                imgBomba,
+                72 * frame, 0, 72, 72,
+                bomba.x, bomba.y,
+                bomba.size, bomba.size
+            );
+        }
+
+        // =========================================================
+        // DIBUJAR JUGADORES
+        // =========================================================
+
+        function dibujarJugador(x, y, frame, fila) {
+            if (!img.complete || !img.naturalWidth) {
+                return;
+            }
+
+            frame = Number.isInteger(frame) ? frame : 0;
+            fila = fila || 0;
+
+            ctx.drawImage(
+                img,
+                71 * frame, fila, sw, sh,
+                x, y, dw, dh
+            );
+        }
+
+        function dibujarOtrosJugadores() {
+            for (var id in otrosJugadores) {
+                if (!otrosJugadores.hasOwnProperty(id)) {
+                    continue;
+                }
+
+                var jugador = otrosJugadores[id];
+
+                dibujarJugador(
+                    jugador.x,
+                    jugador.y,
+                    jugador.frameIndex,
+                    jugador.sy
+                );
+            }
+        }
+
+        // =========================================================
+        // COLISIONES Y EXPLOSIÓN
+        // =========================================================
+
+        function comprobarColision() {
+            if (colision) {
+                if (Date.now() - explosionInicio >= 1350) {
+                    colision = false;
+                }
+
+                return;
+            }
+
+            for (var t = 0; t < v.length; t++) {
+                var bomba = v[t];
+
+                if (
+                    bomba.y + bomba.size >= dy &&
+                    bomba.y <= dy + dh &&
+                    bomba.x < p + dw &&
+                    bomba.x + bomba.size > p
+                ) {
+                    colision = true;
+                    explosionInicio = Date.now();
+                    explosionFrame = 0;
+
+                    explosionX = Math.max(
+                        0,
+                        Math.min(630, p - 30)
+                    );
+
+                    // 1. Avisar al servidor para que elimine la bomba globalmente
+                    if (socket && socket.readyState === WebSocket.OPEN) {
+                        socket.send(JSON.stringify({
+                            tipo: "eliminarBomba",
+                            idBomba: bomba.id // Asegúrate de que las bombas tengan una ID única en el servidor
+                        }));
+                    }
+
+                    // 2. Eliminar la bomba del array local en el cliente para que desaparezca al instante
+                    v.splice(t, 1);
+
+                    break;
+                }
+            }
+        }
+
+        function dibujarExplosion() {
+            if (!colision) return;
+
+            if (
+                !imgExplosion.complete ||
+                !imgExplosion.naturalWidth
+            ) {
+                return;
+            }
+
+            var transcurrido = Date.now() - explosionInicio;
+
+            if (transcurrido >= 1350) {
+                colision = false;
+                return;
+            }
+
+            explosionFrame = Math.min(
+                13,
+                Math.floor(transcurrido / 100)
+            );
+
+            ctx.drawImage(
+                imgExplosion,
+                170 * explosionFrame, 0, 170, 233,
+                explosionX, 377, 170, 233
+            );
+        }
+
+        // =========================================================
+        // BUCLE PRINCIPAL DEL JUEGO
+        // =========================================================
+
+        function c() {
+            requestAnimationFrame(c);
+
+            if (
+                !ctx ||
+                !img2.complete ||
+                !img2.naturalWidth
+            ) {
+                return;
+            }
+
+            // IMPORTANTE:
+            // Borrar todo el fotograma y redibujar el fondo evita
+            // que queden imágenes residuales al mover los jugadores.
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.drawImage(
+                img2,
+                0, 0,
+                canvas.width, canvas.height
+            );
+
+            // ---------------------------------------------
+            // BOMBAS SINCRONIZADAS
+            // ---------------------------------------------
+
+            for (var t = 0; t < v.length; t++) {
+                dibujarBomba(v[t]);
+            }
+
+            // ---------------------------------------------
+            // MONEDAS
+            // ---------------------------------------------
+
+            for (var j = 0; j < moneda.length; j++) {
+                moneda[j].pintar();
+            }
+
+            // ---------------------------------------------
+            // OTROS JUGADORES
+            // ---------------------------------------------
+
+            dibujarOtrosJugadores();
+
+            // ---------------------------------------------
+            // JUGADOR LOCAL
+            // ---------------------------------------------
+
+            dibujarJugador(
+                p, dy, frameIndex, sy
+            );
+
+            // ---------------------------------------------
+            // COLISIONES Y EXPLOSIÓN
+            // ---------------------------------------------
+
+            comprobarColision();
+            dibujarExplosion();
+        }
+
+        // =========================================================
+        // CARGA INICIAL
+        // =========================================================
+
+        window.onload = function () {
+            canvas = document.getElementById("micanvas");
+            ctx = cargaContextoCanvas("micanvas");
+
+            if (!ctx) {
+                console.error("No se pudo crear el contexto Canvas.");
+                return;
+            }
+
+            // Cargar imágenes originales.
+            img.src = "sprite.png";
+            img2.src = "fondo.jpg";
+            imgBomba.src = "bomba.png";
+            imgMoneda.src = "coin.png";
+            imgExplosion.src = "blast.png";
+
+            // Crear monedas como en el juego original.
+            crearMonedas(5);
+
+            // Conectar con el servidor multijugador.
+            conectarServidor();
+
+            // Iniciar el bucle de dibujo.
+            requestAnimationFrame(c);
+        };
+    </script>
+</head>
+
+<body>
+    <p id="estado">Conectando al servidor...</p>
+
+    <canvas id="micanvas" width="800" height="600">
+        Tu navegador no soporta canvas.
+    </canvas>
+
+    <p>Usa las flechas izquierda y derecha para moverte.</p>
+</body>
+
+</html>
